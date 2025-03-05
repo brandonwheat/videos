@@ -151,3 +151,23 @@ dmypy.json
 playground.py
 _2022/wordle/data/pattern_matrix.npy
 _2022/piano/data/
+
+
+# Manim generated files
+/public/manim_scripts/media
+/public/batch_scripts
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints
+
+# Config files that may contain sensitive info
+*.local.cfg
+
+# Editor directories and files
+.idea
+.vscode
+*.swp
+*~

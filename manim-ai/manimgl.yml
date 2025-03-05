@@ -1,0 +1,18 @@
+directories:
+  mirror_module_path: False
+  output: "./media"
+  raster_images: ""
+  vector_images: ""
+  sounds: ""
+  temporary_storage: ""
+tex:
+  executable: "C:/Users/Brandon/AppData/Local/Programs/MiKTeX/miktex/bin/x64/pdflatex.exe"
+  template_file: "C:/Users/Brandon/PycharmProjects/videos/manim-ai/tex_template.tex"
+  intermediate_filetype: "dvi"
+  text_to_replace: "[tex_expression]"
+  optimization_level: 3
+universal_import_line: "from manimlib import *"
+style:
+  background_color: "#191919"
+  font: "Consolas"
+break_into_partial_movies: False 

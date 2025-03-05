@@ -11,8 +11,8 @@ type Model = {
 const models: Model[] = [
     { id: "o3-mini-2025-01-31", name: "GPT-o3-mini" },
   { id: "gpt-4o", name: "GPT-4o" },
-  { id: "claude-3-opus", name: "Claude 3 Opus" },
-  { id: "claude-3-sonnet", name: "Claude 3 Sonnet" },
+  { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
+  { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
 ];
 
 interface ModelSelectorProps {

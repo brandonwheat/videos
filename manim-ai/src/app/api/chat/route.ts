@@ -4,8 +4,9 @@ import { exec } from 'child_process';
 import { mkdir, writeFile, access, readdir, unlink } from 'fs/promises';
 import path from 'path';
 import { createParser } from 'eventsource-parser';
-import { createDataStreamResponse, streamText, generateId, tool, CoreMessage } from 'ai';
+import { createDataStreamResponse, streamText, generateId, tool, CoreMessage, DataStreamWriter } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import crypto from 'crypto';
 import { nanoid } from 'nanoid';
 import * as fs from 'fs';
@@ -15,8 +16,169 @@ const openai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Initialize Anthropic with AI SDK
+const anthropic = createAnthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
 // Check if we're running on Windows
 const isWindows = process.platform === 'win32';
+
+// Global data stream for updates
+let globalDataStream: DataStreamWriter | null = null;
+
+// System prompts
+const baseSystemPrompt = `You are ManimAI, an assistant that generates mathematical explanations and animations in the style of 3Blue1Brown.
+
+Your primary goal is to help users understand mathematical concepts by providing intuitive explanations that focus on building deep understanding rather than just formulas and procedures.
+
+When responding to questions:
+1. Focus on building intuition first - help users see and feel the concepts 
+2. Use visual language that paints a mental picture - describe shapes, movements, and transformations
+3. Connect new ideas to concepts the user likely already understands
+4. Present formal definitions and equations only after establishing intuition
+5. Acknowledge the beauty and elegance of mathematical ideas
+6. Use conversational and engaging language, as if explaining to a curious friend
+7. Format your responses using Markdown for better readability
+
+You have access to a tool that generates animations using the Manim library. When users request to see or visualize concepts, or when a visual explanation would be helpful, you should use this tool by providing proper Manim code.
+Before generating Manim code, carefully and comprehensively plan out the scenes for the animation.
+IMPORTANT: When your Manim code generates an error, DO NOT just show the fixed code to the user. Instead, call the generateManimAnimation tool again with the corrected code. Always execute the tool with your corrected code to actually generate the animation.
+
+When writing Manim code, ensure it:
+1. Uses the Manim Community Edition syntax with "from manim import *" (not ManimGL)
+2. Creates a Scene class with a construct method
+3. Includes proper imports
+4. Has helpful comments explaining key parts of the animation
+5. Makes the animation visually appealing with good colors, transitions, and timing
+6. Is complete and runnable
+7. Keeps animations under 30 seconds total
+8. Makes the animation educational and focused on building intuition
+9. Uses reasonable font sizes and clear layout for readability
+10. Follows 3Blue1Brown's style with elegant transitions, clean visuals, and thoughtful pacing
+
+Technical requirements for the Manim code:
+- Use descriptive class names for Scene classes
+- Use MathTex() for mathematical expressions
+- Verify that animations are properly sequenced and won't cause runtime errors
+- Keep the total animation length reasonable (15-30 seconds is ideal)
+- Test all mathematical formulas for correctness
+- Always use the --disable_caching flag when rendering animations due to a known bug
+
+LaTeX syntax guidelines:
+- Always use double backslashes (\\\\) or raw strings (r"...") when writing LaTeX in Python
+- For mathematical operators like multiplication, use \\times (not times)
+- For fractions, use \\frac{numerator}{denominator}
+- For square roots, use \\sqrt{expression}
+- For powers, use x^{power}
+- For subscripts, use x_{subscript}
+- Always check that LaTeX commands have proper backslashes
+- Common errors include missing backslashes before LaTeX commands (e.g., "times" instead of "\\times")`;
+
+// Claude-specific system prompt
+const claudeSystemPrompt = `You are ManimAI, an assistant that generates mathematical explanations and animations in the style of 3Blue1Brown.
+
+Your primary goal is to help users understand mathematical concepts by providing intuitive explanations that focus on building deep understanding rather than just formulas and procedures.
+
+When responding to questions:
+1. Focus on building intuition first - help users see and feel the concepts 
+2. Use visual language that paints a mental picture - describe shapes, movements, and transformations
+3. Connect new ideas to concepts the user likely already understands
+4. Present formal definitions and equations only after establishing intuition
+5. Acknowledge the beauty and elegance of mathematical ideas
+6. Use conversational and engaging language, as if explaining to a curious friend
+7. Format your responses using Markdown for better readability
+
+You have access to a tool that generates animations using the Manim library. When users request to see or visualize concepts, or when a visual explanation would be helpful, you should use this tool by providing proper Manim code.
+Before generating Manim code, carefully and comprehensively plan out the scenes for the animation.
+IMPORTANT: When your Manim code generates an error, DO NOT just show the fixed code to the user. Instead, call the generateManimAnimation tool again with the corrected code. Always execute the tool with your corrected code to actually generate the animation.
+
+When writing Manim code, ensure it:
+1. Uses the Manim Community Edition syntax with "from manim import *" (not ManimGL)
+2. Creates a Scene class with a construct method
+3. Includes proper imports
+4. Has helpful comments explaining key parts of the animation
+5. Makes the animation visually appealing with good colors, transitions, and timing
+6. Is complete and runnable
+7. Keeps animations under 30 seconds total
+8. Makes the animation educational and focused on building intuition
+9. Uses reasonable font sizes and clear layout for readability
+10. Follows 3Blue1Brown's style with elegant transitions, clean visuals, and thoughtful pacing
+
+Technical requirements for the Manim code:
+- Use descriptive class names for Scene classes
+- Use MathTex() for mathematical expressions
+- Verify that animations are properly sequenced and won't cause runtime errors
+- Keep the total animation length reasonable (15-30 seconds is ideal)
+- Test all mathematical formulas for correctness
+- Always use the --disable_caching flag when rendering animations due to a known bug
+
+LaTeX syntax guidelines:
+- Always use double backslashes (\\\\) or raw strings (r"...") when writing LaTeX in Python
+- For mathematical operators like multiplication, use \\times (not times)
+- For fractions, use \\frac{numerator}{denominator}
+- For square roots, use \\sqrt{expression}
+- For powers, use x^{power}
+- For subscripts, use x_{subscript}
+- Always check that LaTeX commands have proper backslashes
+- Common errors include missing backslashes before LaTeX commands (e.g., "times" instead of "\\times")`;
+
+// Voiceover instructions
+const voiceoverInstructions = `
+VOICEOVER INSTRUCTIONS:
+You have access to Manim Voiceover which integrates speech narration with Manim animations. 
+When creating animations, include voiceover narration to explain the mathematical concepts as they're visualized.
+
+To use voiceovers in your animations:
+1. Import the VoiceoverScene and OpenAI speech service:
+   \`\`\`python
+   from manim import *
+   from manim_voiceover import VoiceoverScene
+   from manim_voiceover.services.openai import OpenAIService
+   \`\`\`
+
+2. Extend VoiceoverScene instead of Scene:
+   \`\`\`python
+   class YourScene(VoiceoverScene):
+   \`\`\`
+
+3. In the construct method, set up the OpenAI speech service:
+   \`\`\`python
+   def construct(self):
+       # Set up the speech service
+       service = OpenAIService(voice="alloy", model="tts-1-hd")
+       self.set_speech_service(service)
+   \`\`\`
+
+4. Use the voiceover context manager to add narration at specific points:
+   \`\`\`python
+   with self.voiceover("This is a circle.") as tracker:
+       self.play(Create(circle))
+   \`\`\`
+
+5. You can also wait for voiceovers to finish or use bookmarks:
+   \`\`\`python
+   # Wait for the voiceover to finish
+   self.wait_for_voiceover()
+   
+   # Or use SSML with bookmarks
+   with self.voiceover("""
+       Here we have a circle <bookmark mark='circle_created'/> 
+       and we can transform it <bookmark mark='transform_started'/> 
+       into a square.
+   """) as tracker:
+       self.play(Create(circle))
+       self.wait_until_bookmark("circle_created")
+       self.play(circle.animate.become(square))
+       self.wait_until_bookmark("transform_started")
+   \`\`\`
+
+6. Synchronize animations with speech for a natural flow
+7. Keep narration concise and focused on explaining the current visual elements
+8. Use clear, simple language that complements the visualization
+9. Remember to add the --disable_caching flag when rendering animations due to a known bug
+
+Make sure the voiceover text aligns perfectly with what's being shown on screen at each moment.`;
 
 // Define a schema for the request body
 const schema = z.object({
@@ -26,7 +188,7 @@ const schema = z.object({
       content: z.string(),
     })
   ),
-  model: z.string().optional().default('gpt-4-turbo'),
+  model: z.string().optional().default('gpt-4o'),
   voiceoverEnabled: z.boolean().optional().default(false),
 });
 
@@ -246,13 +408,9 @@ async function generateManimAnimation(manimCode: string, prompt: string): Promis
         }
       }
       
-      console.log(`⚠️ No MP4 files found. Trying fallback animation...`);
-      await generateFallbackAnimation(prompt, scriptDir, id);
-      
-      // Check for fallback animation
-      return await fileExists(path.join(process.cwd(), 'public', 'manim_scripts', 'media', 'videos', `${id}_fallback.mp4`)) 
-        ? `/manim_scripts/media/videos/${id}_fallback.mp4`
-        : { error: "Failed to generate animation", stdout, stderr };
+      console.log(`⚠️ No MP4 files found.`);
+      // Return error information directly to let the LLM handle it
+      return { error: "No video files were generated", stdout, stderr };
     }
   } catch (error: any) {
     console.log(`❌ Error running Manim: ${error}`);
@@ -260,18 +418,7 @@ async function generateManimAnimation(manimCode: string, prompt: string): Promis
     
     console.log(`❌ Failed to generate animation: ${error.error ? error.error.message : error.message}`);
     
-    // Try generating a fallback animation
-    try {
-      await generateFallbackAnimation(prompt, scriptDir, id);
-      
-      // Check if fallback animation was successfully created
-      if (await fileExists(path.join(process.cwd(), 'public', 'manim_scripts', 'media', 'videos', `${id}_fallback.mp4`))) {
-        return `/manim_scripts/media/videos/${id}_fallback.mp4`;
-      }
-    } catch (fallbackError: any) {
-      console.log(`❌ Fallback animation also failed: ${fallbackError.message}`);
-    }
-    
+    // Return error information directly
     return { 
       error: error.error ? error.error.message : error.message,
       stdout: error.stdout || '',
@@ -314,93 +461,6 @@ async function fileExists(filePath: string): Promise<boolean> {
     return true;
   } catch {
     return false;
-  }
-}
-
-// Function to generate a fallback animation if the main one fails
-async function generateFallbackAnimation(prompt: string, scriptDir: string, id: string): Promise<void> {
-  console.log('🔄 Starting fallback animation generation');
-  console.log(`💬 Using prompt: "${prompt}"`);
-  
-  const fallbackPath = path.join(scriptDir, `${id}_fallback.py`);
-  console.log(`📄 Creating fallback script at ${fallbackPath}`);
-  
-  // Simplified Manim code for fallback
-  const fallbackScript = `from manim import *
-
-class Fallback(Scene):
-    def construct(self):
-        # Create a text object with the prompt
-        text = Text("Animation for: ${prompt.replace(/"/g, '\\"')}", font_size=36)
-        
-        # Create a simple equation
-        equation = MathTex("2 + 2 = 4", font_size=72)
-        
-        # Play the animation
-        self.play(Write(text))
-        self.wait(1)
-        self.play(text.animate.to_edge(UP))
-        self.play(Write(equation))
-        self.wait(2)
-`;
-
-  try {
-    await writeFile(fallbackPath, fallbackScript);
-    console.log('✅ Fallback script created successfully');
-    
-    const isWindows = process.platform === 'win32';
-    const fallbackPathForCommand = fallbackPath.replace(/\\/g, '/');
-    
-    // Define video directory
-    const videoDir = path.join(process.cwd(), 'public', 'manim_scripts', 'media', 'videos').replace(/\\/g, '/');
-
-    // The expected path where Manim Community will save the fallback video
-    const expectedFallbackPath = path.join(process.cwd(), 'public', 'manim_scripts', 'media', 'videos', `${id}_fallback.mp4`);
-    
-    // Build the command with correct flags based on manim community help
-    const configPath = path.join(process.cwd(), 'public', 'manim_scripts', 'manim.cfg').replace(/\\/g, '/');
-    const pythonCommand = `python -m manim render -q m "${fallbackPathForCommand}" Fallback -o ${id}_fallback --media_dir "${path.join(process.cwd(), 'public', 'manim_scripts', 'media').replace(/\\/g, '/')}" --config_file "${configPath}"`;
-    
-    // Set a shorter timeout for fallback
-    const FALLBACK_TIMEOUT_MS = 60000; // 1 minute
-    
-    if (isWindows) {
-      // Use the batch file approach for Windows
-      await executeWindowsCommand(pythonCommand);
-    } else {
-      // Use regular execution for other platforms
-      await new Promise<void>((resolve, reject) => {
-        exec(`cd "${process.cwd().replace(/\\/g, '/')}" && ${pythonCommand}`, {
-          timeout: FALLBACK_TIMEOUT_MS,
-          env: {
-            ...process.env,
-            // Add LaTeX and other necessary paths to the PATH
-            PATH: `${process.env.PATH};C:\\texlive\\2023\\bin\\windows;C:\\ffmpeg\\bin`
-          }
-        }, (error, stdout, stderr) => {
-          if (error) {
-            console.log(`❌ Error running fallback: ${error.message}`);
-            console.log(`📊 Fallback STDOUT: ${stdout}`);
-            console.log(`📊 Fallback STDERR: ${stderr}`);
-            reject(error);
-          } else {
-            console.log(`✅ Fallback animation generated successfully`);
-            resolve();
-          }
-        });
-      });
-    }
-
-    // Check if fallback file exists
-    if (await fileExists(expectedFallbackPath)) {
-      console.log(`✅ Fallback animation confirmed at ${expectedFallbackPath}`);
-    } else {
-      console.log(`⚠️ Fallback animation file not found at ${expectedFallbackPath}`);
-      throw new Error('Fallback animation file not found');
-    }
-  } catch (error: any) {
-    console.log(`❌ Failed to generate fallback: ${error.message}`);
-    throw error;
   }
 }
 
@@ -510,7 +570,7 @@ export async function POST(req: Request) {
     console.log(`📱 Using model: ${validatedModel}`);
     console.log(`🔊 Voiceover is ${voiceoverEnabled ? 'enabled' : 'disabled'}`);
     
-    // Define our Manim generation tool with access to voiceoverEnabled
+    // Create our Manim tool
     const generateManimTool = tool({
       description: 'Generate a Manim animation to visualize and explain mathematical concepts. You can provide new code or modify previously generated code based on user feedback.', 
       parameters: z.object({
@@ -550,14 +610,14 @@ export async function POST(req: Request) {
               stderr: result.stderr
             } as ManimToolResult;
           } else {
-            console.log(`❌ Failed to generate animation`);
+            console.log('❌ Failed to generate animation (unknown error)');
             return {
-              error: 'Animation generation failed with unknown error',
+              error: 'Unknown error during animation generation',
               status: 'animation_failed'
             } as ManimToolResult;
           }
         } catch (error) {
-          console.error(`❌ Error in Manim tool execution:`, error);
+          console.error('❌ Error executing Manim tool:', error);
           return {
             error: error instanceof Error ? error.message : 'Unknown error',
             status: 'animation_failed'
@@ -566,181 +626,51 @@ export async function POST(req: Request) {
       }
     });
     
-    // Get last user message
-    const lastUserMessage = validatedMessages.findLast(m => m.role === 'user');
-    if (lastUserMessage) {
-      console.log(`💬 Last user message: "${lastUserMessage.content.substring(0, 50)}${lastUserMessage.content.length > 50 ? '...' : ''}"`);
-    }
-
-    // Convert messages to CoreMessage format with type assertion
-    const coreMessages: CoreMessage[] = validatedMessages.map(m => ({
-      role: m.role as any, // Use type assertion to handle role conversion
-      content: m.content
-    }));
+    // Determine if we're using a Claude model (for system prompt selection only)
+    const isClaudeModel = validatedModel.includes('claude');
     
-    // Add a system message if there isn't one already
-    if (!coreMessages.some(message => message.role === 'system')) {
-      console.log('📝 Adding system message');
-      
-      // Base system prompt for both with and without voiceovers
-      const basePrompt = `You are ManimAI, an assistant that generates mathematical explanations and animations in the style of 3Blue1Brown.
-
-Your primary goal is to help users understand mathematical concepts by providing intuitive explanations that focus on building deep understanding rather than just formulas and procedures.
-
-When responding to questions:
-1. Focus on building intuition first - help users see and feel the concepts 
-2. Use visual language that paints a mental picture - describe shapes, movements, and transformations
-3. Connect new ideas to concepts the user likely already understands
-4. Present formal definitions and equations only after establishing intuition
-5. Acknowledge the beauty and elegance of mathematical ideas
-6. Use conversational and engaging language, as if explaining to a curious friend
-7. Format your responses using Markdown for better readability
-
-You have access to a tool that generates animations using the Manim library. When users request to see or visualize concepts, or when a visual explanation would be helpful, you should use this tool by providing proper Manim code.
-Before generating Manim code, carefully and comprehensively plan out the scenes for the animation.
-IMPORTANT: When your Manim code generates an error, DO NOT just show the fixed code to the user. Instead, call the generateManimAnimation tool again with the corrected code. Always execute the tool with your corrected code to actually generate the animation.`;
-
-      // Standard Manim requirements for both versions
-      const manimRequirements = `When writing Manim code, ensure it:
-1. Uses the Manim Community Edition syntax with "from manim import *" (not ManimGL)
-2. Creates a Scene class with a construct method
-3. Includes proper imports
-4. Has helpful comments explaining key parts of the animation
-5. Makes the animation visually appealing with good colors, transitions, and timing
-6. Is complete and runnable
-7. Keeps animations under 30 seconds total
-8. Makes the animation educational and focused on building intuition
-9. Uses reasonable font sizes and clear layout for readability
-10. Follows 3Blue1Brown's style with elegant transitions, clean visuals, and thoughtful pacing
-
-Technical requirements for the Manim code:
-- Use descriptive class names for Scene classes
-- Use MathTex() for mathematical expressions
-- Verify that animations are properly sequenced and won't cause runtime errors
-- Keep the total animation length reasonable (15-30 seconds is ideal)
-- Test all mathematical formulas for correctness
-- Always use the --disable_caching flag when rendering animations due to a known bug`;
-
-      // LaTeX guidelines for both versions
-      const latexGuidelines = `LaTeX syntax guidelines:
-- Always use double backslashes (\\\\) or raw strings (r"...") when writing LaTeX in Python
-- For mathematical operators like multiplication, use \\times (not times)
-- For fractions, use \\frac{numerator}{denominator}
-- For square roots, use \\sqrt{expression}
-- For powers, use x^{power}
-- For subscripts, use x_{subscript}
-- Always check that LaTeX commands have proper backslashes
-- Common errors include missing backslashes before LaTeX commands (e.g., "times" instead of "\\times")`;
-
-      // Additional instructions for voiceovers
-      const voiceoverInstructions = `
-VOICEOVER INSTRUCTIONS:
-You have access to Manim Voiceover which integrates speech narration with Manim animations. 
-When creating animations, include voiceover narration to explain the mathematical concepts as they're visualized.
-
-To use voiceovers in your animations:
-1. Import the VoiceoverScene and OpenAI speech service:
-   \`\`\`python
-   from manim import *
-   from manim_voiceover import VoiceoverScene
-   from manim_voiceover.services.openai import OpenAIService
-   \`\`\`
-
-2. Extend VoiceoverScene instead of Scene:
-   \`\`\`python
-   class YourScene(VoiceoverScene):
-   \`\`\`
-
-3. In the construct method, set up the OpenAI speech service:
-   \`\`\`python
-   def construct(self):
-       # Set up the speech service
-       service = OpenAIService(voice="alloy", model="tts-1-hd")
-       self.set_speech_service(service)
-   \`\`\`
-
-4. Use the voiceover context manager to add narration at specific points:
-   \`\`\`python
-   with self.voiceover("This is a circle.") as tracker:
-       self.play(Create(circle))
-   \`\`\`
-
-5. You can also wait for voiceovers to finish or use bookmarks:
-   \`\`\`python
-   # Wait for the voiceover to finish
-   self.wait_for_voiceover()
-   
-   # Or use SSML with bookmarks
-   with self.voiceover("""
-       Here we have a circle <bookmark mark='circle_created'/> 
-       and we can transform it <bookmark mark='transform_started'/> 
-       into a square.
-   """) as tracker:
-       self.play(Create(circle))
-       self.wait_until_bookmark("circle_created")
-       self.play(circle.animate.become(square))
-       self.wait_until_bookmark("transform_started")
-   \`\`\`
-
-6. Synchronize animations with speech for a natural flow
-7. Keep narration concise and focused on explaining the current visual elements
-8. Use clear, simple language that complements the visualization
-9. Remember to add the --disable_caching flag when rendering animations due to a known bug
-
-Make sure the voiceover text aligns perfectly with what's being shown on screen at each moment.`;
-
-      // Create the final system prompt based on voiceoverEnabled flag
-      const systemPrompt = voiceoverEnabled 
-        ? `${basePrompt}\n\n${voiceoverInstructions}\n\n${manimRequirements}\n\n${latexGuidelines}`
-        : `${basePrompt}\n\n${manimRequirements}\n\n${latexGuidelines}`;
-      
-      coreMessages.unshift({
-        role: 'system',
-        content: systemPrompt
-      });
-    }
+    // Get the appropriate AI model
+    const aiModel = isClaudeModel 
+      ? anthropic(validatedModel)
+      : openai(validatedModel);
     
-    // Extract any previous Manim code from messages if available and add to system message
-    const previousManimTool = validatedMessages.findLast(
-      m => m.role === 'assistant' && 
-      m.content && 
-      typeof m.content === 'string' && 
-      m.content.includes('generateManimAnimation')
-    );
-    
-    if (previousManimTool) {
-      // Try to extract the Manim code from the assistant's message
-      const codeMatch = previousManimTool.content.match(/```python\s*([\s\S]*?)\s*```/);
-      if (codeMatch && codeMatch[1]) {
-        const previousCode = codeMatch[1].trim();
-        console.log(`📝 Found previous Manim code (${previousCode.length} chars)`);
+    // Create and return the data stream response
+    const response = await createDataStreamResponse({
+      execute: async (dataStream: DataStreamWriter) => {
+        // Store the stream globally
+        globalDataStream = dataStream;
         
-        // Store it globally for future reference
-        globalManimContext.latestManimCode = previousCode;
-        
-        // Find the system message
-        const systemMessageIndex = coreMessages.findIndex(m => m.role === 'system');
-        
-        if (systemMessageIndex !== -1) {
-          // Append to existing system message
-          coreMessages[systemMessageIndex].content += `\n\nI see you've already created a Manim animation. If the user wants to modify it, you can access the previous code and make changes to it. The previous Manim code is:\n\n\`\`\`python\n${previousCode}\n\`\`\``;
-        }
-      }
-    }
-    
-    return createDataStreamResponse({
-      execute: async (dataStream) => {
-        // Send initial status update
-        console.log('🚀 Starting data stream response');
+        // Send initial status
         dataStream.writeData({ status: 'starting' });
         
-        // Stream response with potential tool usage
+        // Deep copy messages to avoid mutation issues
+        const messagesToSend = JSON.parse(JSON.stringify(validatedMessages));
+        
+        // Add system message if it doesn't exist at the beginning
+        if (messagesToSend.length === 0 || messagesToSend[0].role !== 'system') {
+          messagesToSend.unshift({
+            role: 'system',
+            content: isClaudeModel ? claudeSystemPrompt : baseSystemPrompt,
+          });
+        }
+
+        // Add voiceover instructions if enabled
+        if (voiceoverEnabled) {
+          // Find the system message index
+          const systemMessageIndex = messagesToSend.findIndex((m: Message) => m.role === 'system');
+          if (systemMessageIndex !== -1) {
+            messagesToSend[systemMessageIndex].content += voiceoverInstructions;
+          }
+        }
+
+        // Stream response with potential tool usage - same for both model types
         console.log('💬 Generating text response...');
         
         const textResult = await streamText({
-          model: openai(validatedModel),
-          messages: coreMessages,
-          maxSteps: 2, // Allow for tool call and final response
+          model: aiModel,
+          messages: messagesToSend,
+          maxSteps: 5, // Allow for tool call and final response
+          maxTokens: isClaudeModel ? 60000 : 15000,
           tools: {
             generateManimAnimation: generateManimTool
           },
@@ -816,8 +746,13 @@ Make sure the voiceover text aligns perfectly with what's being shown on screen 
         textResult.mergeIntoDataStream(dataStream);
       }
     });
+    
+    // Return the response
+    return new Response(response.body, {
+      headers: { 'Content-Type': 'text/event-stream' }
+    });
   } catch (error) {
-    console.error('Error in Chat API:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    console.error('❌ Error in chat API:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 } 

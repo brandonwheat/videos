@@ -1,0 +1,86 @@
+test/
+vitest.config.ts
+
+# Node modules and dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.nuxt/
+.output/
+
+# Cache and temp files
+.cache/
+.temp/
+.tmp/
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+
+# IDE and editor files
+.idea/
+.vscode/
+*.sublime-*
+.settings/
+.project
+.classpath
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.*
+*.env.local
+
+# Testing
+coverage/
+.nyc_output/
+__tests__/
+__mocks__/
+*.test.*
+*.spec.*
+
+# Media files
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.svg
+*.ico
+*.mp3
+*.mp4
+*.wav
+*.avi
+*.mov
+*.webm
+*.ogg
+
+# Archives and binaries
+*.zip
+*.tar
+*.gz
+*.rar
+*.7z
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdf
+
+# Configuration that shouldn't be included
+*.pem
+*.key
+*.crt
+*.pfx

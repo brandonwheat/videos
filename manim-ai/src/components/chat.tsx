@@ -18,6 +18,7 @@ type ChatState = {
   animationStatus: string;
   selectedModel: string;
   manimCode: string | null;
+  voiceoverEnabled: boolean;
 };
 
 // Define the expected data type
@@ -37,7 +38,8 @@ export default function Chat() {
     generatingAnimation: false,
     animationStatus: '',
     selectedModel: "gpt-4o",
-    manimCode: null
+    manimCode: null,
+    voiceoverEnabled: false
   });
   
   const [showSettings, setShowSettings] = useState(false);
@@ -110,7 +112,8 @@ export default function Chat() {
   } = useChat({
     api: '/api/chat',
     body: {
-      model: state.selectedModel
+      model: state.selectedModel,
+      voiceoverEnabled: state.voiceoverEnabled
     },
     id: "manim-chat",
     streamProtocol: "data",
@@ -268,14 +271,35 @@ export default function Chat() {
       const videoUrl = chatData.videoUrl as string;
       addDebugInfo(`Video URL received: ${videoUrl}`);
       
-      // Check if the URL appears valid
-      const isValidUrl = videoUrl.startsWith('/') || videoUrl.startsWith('http');
+      // Check if the URL appears valid and has the correct structure
+      const isValidUrl = (videoUrl.startsWith('/') || videoUrl.startsWith('http')) && 
+                        (videoUrl.includes('/720p30/') || videoUrl.includes('\\720p30\\'));
       addDebugInfo(`Is video URL valid format? ${isValidUrl}`);
+      
+      // Ensure the URL has the correct structure and .mp4 extension
+      let baseUrl = videoUrl.split('?')[0];
+      
+      // Detect if the URL already has the correct structure
+      const hasCorrectStructure = baseUrl.includes('/720p30/') || baseUrl.includes('\\720p30\\');
+      
+      if (!hasCorrectStructure) {
+        // Extract the ID from the path
+        const pathParts = baseUrl.split('/');
+        const idPart = pathParts[pathParts.length - 1].replace('.mp4', '');
+        // Reconstruct with correct structure
+        baseUrl = `/manim_scripts/media/videos/${idPart}/720p30/${idPart}.mp4`;
+        addDebugInfo(`Corrected URL structure: ${baseUrl}`);
+      }
+      
+      if (!baseUrl.endsWith('.mp4')) {
+        baseUrl = `${baseUrl}.mp4`;
+        addDebugInfo(`Ensured URL has .mp4 extension: ${baseUrl}`);
+      }
       
       // Add timestamp parameter to force reload if provided
       const finalVideoUrl = chatData.videoTimestamp 
-        ? `${videoUrl}?t=${chatData.videoTimestamp}` 
-        : videoUrl;
+        ? `${baseUrl}?t=${chatData.videoTimestamp}` 
+        : baseUrl;
       
       // Mark as a new animation if specified
       const isNewAnimation = Boolean(chatData.newAnimation);
@@ -406,22 +430,52 @@ export default function Chat() {
     setState(prev => ({ ...prev, selectedModel: modelId }));
   };
   
+  const toggleVoiceover = () => {
+    const newValue = !state.voiceoverEnabled;
+    addDebugInfo(`Voiceover ${newValue ? 'enabled' : 'disabled'}`);
+    setState(prev => ({ ...prev, voiceoverEnabled: newValue }));
+  };
+  
   // Function to test if the video URL is accessible
   const testVideoUrl = async (url: string) => {
     try {
-      setTestingVideo(true);
-      const testUrl = `/api/test-video?path=${encodeURIComponent(url)}`;
-      const response = await fetch(testUrl);
+      // Ensure the URL has the correct structure and .mp4 extension
+      let videoUrl = url;
+      const baseUrl = url.split('?')[0];
+      
+      // Detect if the URL already has the correct structure
+      const hasCorrectStructure = baseUrl.includes('/720p30/') || baseUrl.includes('\\720p30\\');
+      
+      if (!hasCorrectStructure) {
+        // Extract the ID from the path
+        const pathParts = baseUrl.split('/');
+        const idPart = pathParts[pathParts.length - 1].replace('.mp4', '');
+        // Reconstruct with correct structure
+        videoUrl = `/manim_scripts/media/videos/${idPart}/720p30/${idPart}.mp4${url.includes('?') ? '?' + url.split('?')[1] : ''}`;
+        addDebugInfo(`Corrected URL structure for testing: ${videoUrl}`);
+      }
+      
+      if (!videoUrl.split('?')[0].endsWith('.mp4')) {
+        videoUrl = `${videoUrl.split('?')[0]}.mp4${videoUrl.includes('?') ? '?' + videoUrl.split('?')[1] : ''}`;
+        addDebugInfo(`Ensured URL has .mp4 extension for testing: ${videoUrl}`);
+      }
+      
+      // Test if the file exists
+      const apiTestUrl = `/api/test-video?path=${encodeURIComponent(videoUrl)}`;
+      addDebugInfo(`Testing video URL: ${apiTestUrl}`);
+      const response = await fetch(apiTestUrl);
+      
+      if (!response.ok) {
+        addDebugInfo(`❌ Video test failed with HTTP status: ${response.status}`);
+        return { error: `HTTP Error: ${response.status}` };
+      }
+      
       const result = await response.json();
-      setVideoTestResult(result);
       addDebugInfo(`Video test result: ${JSON.stringify(result)}`);
+      return result;
     } catch (error) {
-      console.error('Error testing video URL:', error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      setVideoTestResult({ error: errorMessage });
-      addDebugInfo(`Error testing video URL: ${errorMessage}`);
-    } finally {
-      setTestingVideo(false);
+      addDebugInfo(`❌ Error testing video: ${error}`);
+      return { error: String(error) };
     }
   };
 
@@ -429,13 +483,13 @@ export default function Chat() {
   const regenerateAnimation = async (code: string): Promise<void> => {
     addDebugInfo(`Regenerating animation with updated code`);
     
-    // Batch state updates to minimize re-renders
+    // Set the generating state but don't clear video URL yet
     setState(prev => ({
       ...prev,
       manimCode: code,
       generatingAnimation: true,
       animationStatus: 'starting'
-      // Don't clear videoUrl yet to avoid flickering
+      // Keep the existing videoUrl while generating
     }));
     
     try {
@@ -455,31 +509,78 @@ export default function Chat() {
       const result = await response.json();
       addDebugInfo(`Received API response: ${JSON.stringify(result)}`);
       
-      // Add a timestamp to force the video to reload
-      if (result.videoUrl) {
-        result.videoUrl = `${result.videoUrl}?t=${Date.now()}`;
-        addDebugInfo(`Added timestamp to video URL: ${result.videoUrl}`);
+      if (result.success === false) {
+        addDebugInfo(`Animation generation failed: ${result.error || 'Unknown error'}`);
+        setState(prev => ({
+          ...prev,
+          generatingAnimation: false,
+          animationStatus: 'error',
+        }));
+        return;
       }
       
-      // Update state with the result
+      if (!result.videoUrl) {
+        addDebugInfo(`No video URL returned in the response`);
+        setState(prev => ({
+          ...prev,
+          generatingAnimation: false,
+          animationStatus: 'error',
+        }));
+        return;
+      }
+      
+      // Log the original URL
+      addDebugInfo(`Original video URL from API: ${result.videoUrl}`);
+      addDebugInfo(`Video verified by server: ${result.videoVerified || 'unknown'}`);
+      
+      // Add a timestamp to force the video to reload
+      const videoUrlWithTimestamp = `${result.videoUrl}?t=${Date.now()}`;
+      addDebugInfo(`Added timestamp to video URL: ${videoUrlWithTimestamp}`);
+      
+      // Test the video URL before setting it
+      const testResult = await testVideoUrl(result.videoUrl);
+      if (!testResult.exists) {
+        addDebugInfo(`❌ WARNING: Video file not found in pre-verification check!`);
+      }
+      
+      // Update state with the new URL
       setState(prev => ({
         ...prev,
-        videoUrl: result.videoUrl || null,
+        videoUrl: videoUrlWithTimestamp,
         generatingAnimation: false,
-        animationStatus: result.status || 'completed'
+        animationStatus: testResult.exists ? 'completed' : 'error'
       }));
       
       // Show the video tab
       setSidebarTab('video');
       setShowSidebar(true);
       
+      // After a short delay, test if the video is accessible
+      setTimeout(async () => {
+        try {
+          const testUrl = `/api/test-video?path=${encodeURIComponent(result.videoUrl)}`;
+          addDebugInfo(`Testing video URL: ${testUrl}`);
+          const testResponse = await fetch(testUrl);
+          const testResult = await testResponse.json();
+          
+          if (testResult.exists) {
+            addDebugInfo(`✅ Video file confirmed to exist: ${result.videoUrl}`);
+            addDebugInfo(`File info: ${JSON.stringify(testResult.fileInfo)}`);
+          } else {
+            addDebugInfo(`❌ Video file NOT found: ${result.videoUrl}`);
+            addDebugInfo(`Test result: ${JSON.stringify(testResult)}`);
+          }
+        } catch (error) {
+          addDebugInfo(`Error testing video URL: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }, 500);
+      
     } catch (error) {
       addDebugInfo(`Error regenerating animation: ${error instanceof Error ? error.message : String(error)}`);
-      
       setState(prev => ({
         ...prev,
         generatingAnimation: false,
-        animationStatus: 'error'
+        animationStatus: 'error',
       }));
     }
   };
@@ -553,7 +654,37 @@ export default function Chat() {
               selectedModel={state.selectedModel} 
               onModelChange={handleModelChange} 
             />
+            
+            <label htmlFor="voiceover-toggle" className="text-sm">Voiceover:</label>
+            <div className="flex items-center">
+              <button 
+                id="voiceover-toggle"
+                onClick={toggleVoiceover}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  state.voiceoverEnabled ? 'bg-primary' : 'bg-gray-300'
+                }`}
+                role="switch"
+                aria-checked={state.voiceoverEnabled}
+              >
+                <span 
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    state.voiceoverEnabled ? 'translate-x-6' : 'translate-x-1'
+                  }`} 
+                />
+              </button>
+              <span className="ml-2 text-sm text-muted-foreground">
+                {state.voiceoverEnabled ? 'Enabled' : 'Disabled'}
+              </span>
+            </div>
           </div>
+          
+          {state.voiceoverEnabled && (
+            <div className="mt-3 p-3 bg-muted/30 rounded-md">
+              <p className="text-xs text-muted-foreground">
+                <strong>Note:</strong> When voiceover is enabled, animations will include spoken narration using OpenAI's text-to-speech service.
+              </p>
+            </div>
+          )}
         </div>
       )}
       

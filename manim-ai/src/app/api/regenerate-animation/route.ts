@@ -178,7 +178,7 @@ export async function POST(req: Request) {
       
       if (fileExistsResult) {
         console.log(`✅ Animation generated successfully at ${expectedOutputPath}`);
-        return NextResponse.json({ success: true, videoPath: `/manim_scripts/media/videos/${id}.mp4` });
+        return NextResponse.json({ success: true, videoUrl: `/manim_scripts/media/videos/${id}.mp4` });
       } else {
         console.log(`❓ Output file not found at expected path: ${expectedOutputPath}`);
         
@@ -219,7 +219,19 @@ export async function POST(req: Request) {
               
               // Convert the path to a URL
               const publicPath = convertToPublicPath(newestFile);
-              return NextResponse.json({ success: true, videoPath: publicPath });
+              
+              // Verify the file is accessible
+              const fullPath = path.join(process.cwd(), 'public', publicPath.startsWith('/') ? publicPath.substring(1) : publicPath);
+              console.log(`🔍 Verifying file exists at: ${fullPath}`);
+              const fileVerified = await fileExists(fullPath);
+              console.log(`✅ File verified: ${fileVerified}`);
+
+              return NextResponse.json({ 
+                success: true, 
+                videoUrl: publicPath,
+                videoVerified: fileVerified,
+                fullPath: fullPath
+              });
             }
           }
         } catch (err) {
@@ -262,7 +274,19 @@ export async function POST(req: Request) {
             
             // Convert the path to a URL
             const publicPath = convertToPublicPath(newestFile);
-            return NextResponse.json({ success: true, videoPath: publicPath });
+            
+            // Verify the file is accessible
+            const fullPath = path.join(process.cwd(), 'public', publicPath.startsWith('/') ? publicPath.substring(1) : publicPath);
+            console.log(`🔍 Verifying file exists at: ${fullPath}`);
+            const fileVerified = await fileExists(fullPath);
+            console.log(`✅ File verified: ${fileVerified}`);
+
+            return NextResponse.json({ 
+              success: true, 
+              videoUrl: publicPath,
+              videoVerified: fileVerified,
+              fullPath: fullPath
+            });
           }
         }
         

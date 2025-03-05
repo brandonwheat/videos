@@ -64,13 +64,17 @@ export function AnimationSidebar({
       
       lastVideoUrl.current = videoUrl;
       
+      // Reset video state when URL changes
       setVideoError(null);
       setVideoLoaded(false);
       
+      // Force video to reload by incrementing key
       setVideoKey(prev => prev + 1);
       
+      // Switch to video tab
       setActiveTab('video');
       
+      // Add a small delay before testing the URL to allow for browser to load
       const timeoutId = setTimeout(() => {
         if (videoUrl && isOpen) {
           testVideoUrl(videoUrl);
@@ -107,8 +111,30 @@ export function AnimationSidebar({
   const testVideoUrl = async (url: string) => {
     try {
       setTestingVideo(true);
-      const testUrl = `/api/test-video?path=${encodeURIComponent(url)}`;
-      const response = await fetch(testUrl);
+      
+      // Ensure the URL has the correct structure and .mp4 extension
+      let testUrl = url;
+      const baseUrl = url.split('?')[0];
+      
+      // Detect if the URL already has the correct structure
+      const hasCorrectStructure = baseUrl.includes('/720p30/') || baseUrl.includes('\\720p30\\');
+      
+      if (!hasCorrectStructure) {
+        // Extract the ID from the path
+        const pathParts = baseUrl.split('/');
+        const idPart = pathParts[pathParts.length - 1].replace('.mp4', '');
+        // Reconstruct with correct structure
+        testUrl = `/manim_scripts/media/videos/${idPart}/720p30/${idPart}.mp4${url.includes('?') ? '?' + url.split('?')[1] : ''}`;
+        console.log(`Corrected URL structure: ${testUrl}`);
+      }
+      
+      if (!testUrl.split('?')[0].endsWith('.mp4')) {
+        testUrl = `${testUrl.split('?')[0]}.mp4${testUrl.includes('?') ? '?' + testUrl.split('?')[1] : ''}`;
+        console.log(`Ensured URL has .mp4 extension for testing: ${testUrl}`);
+      }
+      
+      const apiTestUrl = `/api/test-video?path=${encodeURIComponent(testUrl)}`;
+      const response = await fetch(apiTestUrl);
       const result = await response.json();
       setVideoTestResult(result);
     } catch (error) {
@@ -130,14 +156,28 @@ export function AnimationSidebar({
     console.error('Video error:', errorMessage, videoElement.error);
     
     if (videoUrl) {
+      console.log('Retrying video URL test after error:', videoUrl);
       testVideoUrl(videoUrl);
     }
   };
 
   const handleVideoLoaded = () => {
-    console.log('Video loaded successfully');
+    console.log('Video loaded successfully:', videoUrl);
     setVideoLoaded(true);
     setVideoError(null);
+  };
+
+  const getCorrectVideoUrl = (url: string | null): string | undefined => {
+    if (!url) return undefined;
+    const baseUrl = url.split('?')[0];
+    const hasCorrectStructure = baseUrl.includes('/720p30/') || baseUrl.includes('\\720p30\\');
+    if (hasCorrectStructure) {
+      return url;
+    } else {
+      const pathParts = baseUrl.split('/');
+      const idPart = pathParts[pathParts.length - 1].replace('.mp4', '');
+      return `/manim_scripts/media/videos/${idPart}/720p30/${idPart}.mp4${url.includes('?') ? '?' + url.split('?')[1] : ''}`;
+    }
   };
 
   return (
@@ -209,11 +249,27 @@ export function AnimationSidebar({
                   <Loader2 className="h-8 w-8 animate-spin mb-2" />
                   <p>Generating animation...</p>
                 </div>
+              ) : videoError ? (
+                <div className="flex flex-col items-center justify-center p-4 text-center text-red-500">
+                  <p className="font-medium mb-2">Error Loading Video</p>
+                  <p className="text-xs">{videoError}</p>
+                  <button 
+                    onClick={() => {
+                      console.log('Manual video reload requested');
+                      setVideoKey(prev => prev + 1);
+                      if (videoUrl) testVideoUrl(videoUrl);
+                    }}
+                    className="mt-2 px-3 py-1 bg-primary text-primary-foreground rounded-md text-sm"
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : (
+                // When key changes, React unmounts and remounts the video element
                 <video 
-                  key={videoKey}
+                  key={`${videoUrl}-${videoKey}`} // Combine URL and key for extra remount control
                   ref={videoRef}
-                  src={videoUrl} 
+                  src={getCorrectVideoUrl(videoUrl)} 
                   controls 
                   className="w-full h-full rounded"
                   autoPlay
@@ -226,15 +282,25 @@ export function AnimationSidebar({
               )}
             </div>
 
-            <div className="mt-2 flex justify-between">
+            <div className="mt-2 flex justify-between items-center">
               <a 
-                href={videoUrl} 
+                href={getCorrectVideoUrl(videoUrl)} 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="text-sm text-primary hover:underline"
               >
                 Open video in new tab
               </a>
+              
+              <button
+                onClick={() => {
+                  console.log('Forcing video reload');
+                  setVideoKey(prev => prev + 1);
+                }}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Reload Video
+              </button>
             </div>
           </div>
         ) : activeTab === 'video' ? (
